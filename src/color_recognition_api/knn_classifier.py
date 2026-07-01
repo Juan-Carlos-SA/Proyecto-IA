@@ -1,19 +1,25 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 # ----------------------------------------------
-# --- Author         : Ahmet Ozlu
-# --- Mail           : ahmetozlu93@gmail.com
-# --- Date           : 31st December 2017 - new year eve :)
+# --- Original author : Ahmet Ozlu
+# --- Mejoras         : voto ponderado por distancia + k seguro
+# ----------------------------------------------
+#
+# CAMBIOS RESPECTO A LA VERSION ORIGINAL
+# ----------------------------------------------
+# - responseOfNeighbors ahora pondera cada vecino por 1/distancia en vez de
+#   contar todos los votos por igual. Con datasets de entrenamiento pequenos
+#   (por ejemplo la carpeta "blue" solo tiene 6 imagenes) un vecino lejano ya
+#   no puede empatar/ganarle a varios vecinos mucho mas cercanos.
+# - k se ajusta automaticamente para nunca superar la cantidad de datos de
+#   entrenamiento disponibles (evita errores si el dataset es muy chico).
 # ----------------------------------------------
 
 import csv
-import random
 import math
 import operator
-import cv2
 
 
-# calculation of euclidead distance
 def calculateEuclideanDistance(variable1, variable2, length):
     distance = 0
     for x in range(length):
@@ -21,77 +27,66 @@ def calculateEuclideanDistance(variable1, variable2, length):
     return math.sqrt(distance)
 
 
-# get k nearest neigbors
 def kNearestNeighbors(training_feature_vector, testInstance, k):
+    """Devuelve los k vecinos mas cercanos como pares (fila, distancia)."""
     distances = []
     length = len(testInstance)
     for x in range(len(training_feature_vector)):
-        dist = calculateEuclideanDistance(testInstance,
-                training_feature_vector[x], length)
+        dist = calculateEuclideanDistance(testInstance, training_feature_vector[x], length)
         distances.append((training_feature_vector[x], dist))
     distances.sort(key=operator.itemgetter(1))
-    
-    # Use minimum of k and available data points
+
     k_actual = min(k, len(distances))
     if k_actual == 0:
         raise ValueError("No training data available for classification")
-    
-    neighbors = []
-    for x in range(k_actual):
-        neighbors.append(distances[x][0])
-    return neighbors
+
+    return distances[:k_actual]
 
 
-# votes of neighbors
-def responseOfNeighbors(neighbors):
-    all_possible_neighbors = {}
-    for x in range(len(neighbors)):
-        response = neighbors[x][-1]
-        if response in all_possible_neighbors:
-            all_possible_neighbors[response] += 1
-        else:
-            all_possible_neighbors[response] = 1
-    sortedVotes = sorted(all_possible_neighbors.items(),
-                         key=operator.itemgetter(1), reverse=True)
-    return sortedVotes[0][0]
+def responseOfNeighbors(neighbors_with_dist):
+    """Voto ponderado: los vecinos mas cercanos pesan mas que los lejanos."""
+    votes = {}
+    for (neighbor, dist) in neighbors_with_dist:
+        label = neighbor[-1]
+        weight = 1.0 / (dist + 1e-6)
+        votes[label] = votes.get(label, 0.0) + weight
+    return max(votes.items(), key=operator.itemgetter(1))[0]
 
 
-# Load image feature data to training feature vectors and test feature vector
-def loadDataset(
-    filename,
-    filename2,
-    training_feature_vector=[],
-    test_feature_vector=[],
-    ):
+def loadDataset(filename, filename2, training_feature_vector=None, test_feature_vector=None):
+    if training_feature_vector is None:
+        training_feature_vector = []
+    if test_feature_vector is None:
+        test_feature_vector = []
+
     with open(filename) as csvfile:
-        lines = csv.reader(csvfile)
-        dataset = list(lines)
+        dataset = list(csv.reader(csvfile))
         if not dataset:
             raise ValueError(f"Training data file '{filename}' is empty. Please ensure training images are in the training_dataset folder.")
-        for x in range(len(dataset)):
+        for row in dataset:
             for y in range(3):
-                dataset[x][y] = float(dataset[x][y])
-            training_feature_vector.append(dataset[x])
+                row[y] = float(row[y])
+            training_feature_vector.append(row)
 
     with open(filename2) as csvfile:
-        lines = csv.reader(csvfile)
-        dataset = list(lines)
+        dataset = list(csv.reader(csvfile))
         if not dataset:
             raise ValueError(f"Test data file '{filename2}' is empty.")
-        for x in range(len(dataset)):
+        for row in dataset:
             for y in range(3):
-                dataset[x][y] = float(dataset[x][y])
-            test_feature_vector.append(dataset[x])
+                row[y] = float(row[y])
+            test_feature_vector.append(row)
+
+    return training_feature_vector, test_feature_vector
 
 
-def main(training_data, test_data):
-    training_feature_vector = []  # training feature vector
-    test_feature_vector = []  # test feature vector
-    loadDataset(training_data, test_data, training_feature_vector, test_feature_vector)
-    classifier_prediction = []  # predictions
-    k = 3  # K value of k nearest neighbor
-    for x in range(len(test_feature_vector)):
-        neighbors = kNearestNeighbors(training_feature_vector, test_feature_vector[x], k)
-        result = responseOfNeighbors(neighbors)
-        classifier_prediction.append(result)
-    return classifier_prediction[0]		
+def main(training_data, test_data, k=5):
+    training_feature_vector, test_feature_vector = loadDataset(training_data, test_data)
+    # k nunca puede superar la cantidad de muestras de entrenamiento disponibles
+    k = max(1, min(k, len(training_feature_vector)))
+
+    predictions = []
+    for instance in test_feature_vector:
+        neighbors = kNearestNeighbors(training_feature_vector, instance, k)
+        predictions.append(responseOfNeighbors(neighbors))
+    return predictions[0]

@@ -1,0 +1,895 @@
+diff --git a/src/color_classification_image.py b/src/color_classification_image.py
+index add7627..e2931d9 100644
+--- a/src/color_classification_image.py
++++ b/src/color_classification_image.py
+@@ -1,9 +1,18 @@
+ #!/usr/bin/python
+ # -*- coding: utf-8 -*-
+ # -------------------------------------------------------------------------
+-# --- Author         : Ahmet Ozlu
+-# --- Mail           : ahmetozlu93@gmail.com
+-# --- Date           : 8th July 2018 - before Google inside look 2018 :)
++# --- Original author : Ahmet Ozlu
++# --- Mejoras         : seleccion opcional de ROI, manejo de errores
++# -------------------------------------------------------------------------
++#
++# CAMBIOS RESPECTO A LA VERSION ORIGINAL
++# ----------------------------------------------
++# 1) Se puede seleccionar con el mouse la region exacta del objeto a
++#    clasificar (arrastrando un recuadro). Asi el fondo de la foto no se
++#    mezcla en el calculo del color. Si no hay entorno grafico disponible
++#    (por ejemplo al correrlo en un servidor), simplemente usa la imagen
++#    completa sin pedir seleccion.
++# 2) Manejo de errores si la ruta de imagen no existe o no se pudo leer.
+ # -------------------------------------------------------------------------
+ 
+ import cv2
+@@ -11,41 +20,92 @@ from color_recognition_api import color_histogram_feature_extraction
+ from color_recognition_api import knn_classifier
+ import os
+ import os.path
++import platform
+ import sys
+ 
+-# read the test image
+-try:
+-    source_image = cv2.imread(sys.argv[1])
+-except:
+-    import os
+ base_dir = os.path.dirname(os.path.abspath(__file__))
+-source_image = cv2.imread(os.path.join(base_dir, 'pasto.jpg'))
++os.chdir(base_dir)
++
++
++def _has_display():
++    """
++    En Windows/Mac se asume que hay entorno grafico. En Linux se revisa la
++    variable DISPLAY: si no existe (por ejemplo al correr por SSH o en un
++    servidor), evitamos llamar a cv2.selectROI/cv2.imshow, porque OpenCV
++    aborta el proceso (no lanza una excepcion capturable) cuando no
++    encuentra un servidor grafico.
++    """
++    if platform.system() in ('Windows', 'Darwin'):
++        return True
++    return bool(os.environ.get('DISPLAY'))
++
++
++HAS_DISPLAY = _has_display()
++
++# read the test image
++image_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(base_dir, 'pasto.jpg')
++source_image = cv2.imread(image_path)
++if source_image is None:
++    print(f"Error: no se pudo leer la imagen '{image_path}'")
++    sys.exit(1)
++
+ prediction = 'n.a.'
+ 
+ # checking whether the training data is ready
+ PATH = './training.data'
+ 
+-if os.path.isfile(PATH) and os.access(PATH, os.R_OK):
+-    print ('training data is ready, classifier is loading...')
++if os.path.isfile(PATH) and os.path.getsize(PATH) > 0:
++    print('training data is ready, classifier is loading...')
+ else:
+-    print ('training data is being created...')
+-    open('training.data', 'w')
++    print('training data is being created...')
++    if os.path.isfile(PATH):
++        os.remove(PATH)
+     color_histogram_feature_extraction.training()
+-    print ('training data is ready, classifier is loading...')
++    print('training data is ready, classifier is loading...')
++
++# Seleccion opcional de la region de interes: evita que el color de fondo
++# contamine la lectura. Si no hay ventana grafica disponible, se usa toda
++# la imagen automaticamente.
++region_to_analyze = source_image
++if HAS_DISPLAY:
++    try:
++        window_name = 'Selecciona el objeto (ENTER=confirmar, ESC=usar toda la imagen)'
++        roi = cv2.selectROI(window_name, source_image, showCrosshair=True)
++        cv2.destroyWindow(window_name)
++        x, y, w, h = roi
++        if w > 0 and h > 0:
++            region_to_analyze = source_image[y:y + h, x:x + w]
++    except cv2.error:
++        print('No se pudo abrir la ventana de seleccion: se analizara la imagen completa.')
++else:
++    print('Sin entorno grafico disponible: se analizara la imagen completa.')
+ 
+ # get the prediction
+-color_histogram_feature_extraction.color_histogram_of_test_image(source_image)
++color_histogram_feature_extraction.color_histogram_of_test_image(region_to_analyze, use_center_roi=False)
+ prediction = knn_classifier.main('training.data', 'test.data')
+ print('Detected color is:', prediction)
++
+ cv2.putText(
+     source_image,
+     'Prediction: ' + prediction,
+     (15, 45),
+     cv2.FONT_HERSHEY_PLAIN,
+     3,
+-    200,
++    (255, 255, 255),
++    2,
+     )
+ 
+ # Display the resulting frame
+-cv2.imshow('color classifier', source_image)
+-cv2.waitKey(0)		
++if HAS_DISPLAY:
++    try:
++        cv2.imshow('color classifier', source_image)
++        cv2.waitKey(0)
++        cv2.destroyAllWindows()
++    except cv2.error:
++        out_path = os.path.join(base_dir, 'resultado.jpg')
++        cv2.imwrite(out_path, source_image)
++        print(f'No se pudo mostrar la ventana: resultado guardado en {out_path}')
++else:
++    out_path = os.path.join(base_dir, 'resultado.jpg')
++    cv2.imwrite(out_path, source_image)
++    print(f'Sin entorno grafico: resultado guardado en {out_path}')
+diff --git a/src/color_classification_webcam.py b/src/color_classification_webcam.py
+index 2bae7ca..225b8b4 100644
+--- a/src/color_classification_webcam.py
++++ b/src/color_classification_webcam.py
+@@ -1,21 +1,40 @@
+ #!/usr/bin/python
+ # -*- coding: utf-8 -*-
+ # ----------------------------------------------
+-# --- Author         : Ahmet Ozlu
+-# --- Mail           : ahmetozlu93@gmail.com
+-# --- Date           : 31st December 2017 - new year eve :)
++# --- Original author : Ahmet Ozlu
++# --- Mejoras         : ROI central, deteccion de desenfoque,
++# ---                   suavizado temporal de la prediccion
++# ----------------------------------------------
++#
++# CAMBIOS RESPECTO A LA VERSION ORIGINAL
++# ----------------------------------------------
++# 1) ROI central: solo se analiza el recuadro que se dibuja en pantalla, no
++#    el frame completo. Antes, si habia varios objetos/colores de fondo en
++#    camara, el histograma mezclaba todo y el resultado era practicamente
++#    aleatorio.
++# 2) Deteccion de desenfoque (varianza del Laplaciano): si el recuadro esta
++#    borroso (camara sin foco, movimiento), se avisa en pantalla en vez de
++#    devolver una prediccion inventada con datos poco confiables.
++# 3) Suavizado temporal: se guarda un historial de las ultimas N
++#    predicciones y se muestra la mas votada, para eliminar el "parpadeo"
++#    de la prediccion entre frames.
+ # ----------------------------------------------
+ 
+ import cv2
++import os
++from collections import deque, Counter
+ from color_recognition_api import color_histogram_feature_extraction
+ from color_recognition_api import knn_classifier
+-import os
+-import os.path
+ 
+ # Change to src directory to ensure correct file paths
+ script_dir = os.path.dirname(os.path.abspath(__file__))
+ os.chdir(script_dir)
+ 
++# --- Parametros ajustables ---
++BLUR_THRESHOLD = 60          # mas bajo = mas tolerante a imagenes borrosas
++SMOOTHING_WINDOW = 15         # cuantas predicciones recientes se promedian
++PROCESS_EVERY_N_FRAMES = 2    # analizar 1 de cada N frames (rendimiento)
++
+ # Try to find an available camera
+ cap = None
+ for i in range(10):  # Try indices 0-9
+@@ -32,57 +51,89 @@ if cap is None:
+     print("Error: Could not open any camera. Please check your camera/DroidCam connection.")
+     exit()
+ 
+-prediction = 'n.a.'
+-
+ # checking whether the training data is ready
+ PATH = './training.data'
+ 
+-# Check if training data exists and has content
+ training_data_valid = False
+ if os.path.isfile(PATH) and os.access(PATH, os.R_OK):
+-    # Check if file has content
+     if os.path.getsize(PATH) > 0:
+-        print ('training data is ready, classifier is loading...')
++        print('training data is ready, classifier is loading...')
+         training_data_valid = True
+     else:
+-        print ('training data file is empty, regenerating...')
++        print('training data file is empty, regenerating...')
+ 
+ if not training_data_valid:
+-    print ('training data is being created...')
+-    # Delete empty file if it exists
++    print('training data is being created...')
+     if os.path.isfile(PATH):
+         os.remove(PATH)
+     color_histogram_feature_extraction.training()
+-    print ('training data is ready, classifier is loading...')
++    print('training data is ready, classifier is loading...')
++
++
++def is_blurry(gray_roi, threshold=BLUR_THRESHOLD):
++    return cv2.Laplacian(gray_roi, cv2.CV_64F).var() < threshold
++
++
++recent_predictions = deque(maxlen=SMOOTHING_WINDOW)
++stable_prediction = 'n.a.'
++frame_count = 0
+ 
+ while True:
+ 
+     # Capture frame-by-frame
+     (ret, frame) = cap.read()
+-    
++
+     # Skip frame if read failed or frame is empty
+     if not ret or frame is None or frame.size == 0:
+         print("Warning: Invalid frame, skipping...")
+         continue
+ 
++    frame_count += 1
++    x1, y1, x2, y2 = color_histogram_feature_extraction.get_center_roi(frame)
++    roi = frame[y1:y2, x1:x2]
++
++    status_text = stable_prediction
++    box_color = (0, 200, 0)  # verde = ok
++
++    if roi.size > 0 and frame_count % PROCESS_EVERY_N_FRAMES == 0:
++        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
++        if is_blurry(gray_roi):
++            status_text = 'Desenfocado - ajusta el enfoque'
++            box_color = (0, 0, 255)  # rojo = advertencia
++        else:
++            color_histogram_feature_extraction.color_histogram_of_test_image(frame)
++            prediction = knn_classifier.main('training.data', 'test.data')
++            recent_predictions.append(prediction)
++            stable_prediction = Counter(recent_predictions).most_common(1)[0][0]
++            status_text = stable_prediction
++
++    # Guia visual: recuadro donde debe colocarse el objeto
++    cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+     cv2.putText(
+         frame,
+-        'Prediction: ' + prediction,
+-        (15, 45),
++        'Coloca el objeto dentro del recuadro',
++        (15, 25),
+         cv2.FONT_HERSHEY_PLAIN,
+-        3,
+-        200,
++        1.2,
++        (255, 255, 255),
++        1,
++        )
++    cv2.putText(
++        frame,
++        'Prediction: ' + status_text,
++        (15, 60),
++        cv2.FONT_HERSHEY_PLAIN,
++        2,
++        (255, 255, 255),
++        2,
+         )
+ 
+     # Display the resulting frame
+     cv2.imshow('color classifier', frame)
+ 
+-    color_histogram_feature_extraction.color_histogram_of_test_image(frame)
+-
+-    prediction = knn_classifier.main('training.data', 'test.data')
+     if cv2.waitKey(1) & 0xFF == ord('q'):
+         break
+ 
+ # When everything done, release the capture
+ cap.release()
+-cv2.destroyAllWindows()		
++cv2.destroyAllWindows()
+diff --git a/src/color_recognition_api/color_histogram_feature_extraction.py b/src/color_recognition_api/color_histogram_feature_extraction.py
+index 064458b..b6103fe 100644
+--- a/src/color_recognition_api/color_histogram_feature_extraction.py
++++ b/src/color_recognition_api/color_histogram_feature_extraction.py
+@@ -1,54 +1,151 @@
+ #!/usr/bin/python
+ # -*- coding: utf-8 -*-
+ # ----------------------------------------------
+-# --- Author         : Ahmet Ozlu
+-# --- Mail           : ahmetozlu93@gmail.com
+-# --- Date           : 31st December 2017 - new year eve :)
++# --- Original author : Ahmet Ozlu
++# --- Mejoras         : robustez ante iluminacion / enfoque
++# ----------------------------------------------
++#
++# CAMBIOS PRINCIPALES RESPECTO A LA VERSION ORIGINAL
++# ----------------------------------------------------
++# 1) Se trabaja en espacio de color HSV en lugar de RGB puro. El canal H (tono)
++#    es en gran medida independiente del brillo, por lo que un mismo objeto
++#    bajo luz fuerte, tenue o con sombra sigue dando un tono H similar, cosa
++#    que NO ocurre con R, G, B (que cambian mucho al cambiar la iluminacion).
++#
++# 2) Antes de calcular el histograma se descartan los pixeles "no fiables":
++#      - Sombras muy oscuras (V bajo)
++#      - Brillos quemados / reflejos (V muy alto y S muy bajo)
++#    Estos pixeles no representan el color real del objeto, solo el efecto
++#    de la luz, y eran una causa directa de clasificaciones erroneas.
++#
++# 3) Se aplica CLAHE (ecualizacion adaptativa de contraste) sobre el canal de
++#    luminancia para atenuar diferencias fuertes de exposicion/sombra dentro
++#    de la misma imagen antes de analizar el color.
++#
++# 4) El histograma de cada canal se suaviza levemente antes de tomar el pico,
++#    para que un solo grupo de pixeles ruidosos (ruido de sensor / compresion
++#    JPEG) no desvie la deteccion.
++#
++# 5) En el video en vivo, solo se analiza una region central (ROI) en vez de
++#    todo el frame, para que el fondo no contamine la lectura de color del
++#    objeto que el usuario esta mostrando a la camara.
+ # ----------------------------------------------
+ 
+-from PIL import Image
+ import os
+ import cv2
+ import numpy as np
+-import matplotlib.pyplot as plt
+-from color_recognition_api import knn_classifier as knn_classifier
+-
+ 
+-def color_histogram_of_test_image(test_src_image):
+ 
+-    # load the image
++# ---------------------------------------------------------------------------
++# Preprocesamiento
++# ---------------------------------------------------------------------------
++
++def _normalize_illumination(bgr_image):
++    """Atenua sombras/exposicion desigual con CLAHE sobre el canal L (LAB)."""
++    lab = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2LAB)
++    l, a, b = cv2.split(lab)
++    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
++    l = clahe.apply(l)
++    lab = cv2.merge((l, a, b))
++    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
++
++
++def _denoise(bgr_image):
++    """Desenfoque leve para reducir ruido de sensor antes del histograma."""
++    return cv2.GaussianBlur(bgr_image, (5, 5), 0)
++
++
++def get_center_roi(image, roi_ratio=0.35):
++    """
++    Devuelve (x1, y1, x2, y2) de un recuadro cuadrado centrado que cubre
++    `roi_ratio` de la dimension mas pequena de la imagen. Se usa para que en
++    la webcam solo se analice el objeto mostrado frente a la camara y no el
++    fondo de la habitacion.
++    """
++    h, w = image.shape[:2]
++    size = int(min(h, w) * roi_ratio)
++    size = max(size, 10)
++    cx, cy = w // 2, h // 2
++    x1, y1 = max(cx - size // 2, 0), max(cy - size // 2, 0)
++    x2, y2 = min(cx + size // 2, w), min(cy + size // 2, h)
++    return x1, y1, x2, y2
++
++
++def _valid_pixel_mask(hsv_image):
++    """
++    Descarta:
++      - Sombra profunda: V bajo (< 40)
++      - Brillo quemado / reflejo especular: V muy alto (> 250) y S bajo (< 30)
++    Si casi todo queda descartado (p. ej. una imagen totalmente oscura o muy
++    clara), se usan todos los pixeles como respaldo para no dejar la mascara
++    vacia.
++    """
++    h, s, v = cv2.split(hsv_image)
++    shadow_mask = v < 40
++    highlight_mask = (v > 250) & (s < 30)
++    invalid = shadow_mask | highlight_mask
++    mask = np.uint8((~invalid) * 255)
++    if cv2.countNonZero(mask) < 0.05 * mask.size:
++        mask = np.full(mask.shape, 255, dtype=np.uint8)
++    return mask
++
++
++def _smooth_hist(hist):
++    kernel = np.array([1, 2, 4, 2, 1], dtype=np.float32)
++    kernel /= kernel.sum()
++    return np.convolve(hist.flatten(), kernel, mode='same')
++
++
++def _dominant_hsv(bgr_region):
++    """
++    Calcula un descriptor (H, S, V) robusto ante iluminacion para una region
++    BGR: quita ruido, normaliza exposicion, enmascara sombras/brillos y toma
++    el pico suavizado del histograma de cada canal.
++    """
++    region = _denoise(bgr_region)
++    region = _normalize_illumination(region)
++    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
++    mask = _valid_pixel_mask(hsv)
++
++    h_hist = cv2.calcHist([hsv], [0], mask, [180], [0, 180])
++    s_hist = cv2.calcHist([hsv], [1], mask, [256], [0, 256])
++    v_hist = cv2.calcHist([hsv], [2], mask, [256], [0, 256])
++
++    h_peak = int(np.argmax(_smooth_hist(h_hist)))
++    s_peak = int(np.argmax(_smooth_hist(s_hist)))
++    v_peak = int(np.argmax(_smooth_hist(v_hist)))
++
++    # H va de 0-179 en OpenCV; lo reescalamos a 0-255 para que no pese menos
++    # que S y V al calcular distancias euclidianas en el clasificador KNN.
++    h_scaled = int(round(h_peak * (255.0 / 179.0)))
++    return h_scaled, s_peak, v_peak
++
++
++# ---------------------------------------------------------------------------
++# API publica (mismos nombres que la version original para no romper nada
++# que ya llame a estas funciones)
++# ---------------------------------------------------------------------------
++
++def color_histogram_of_test_image(test_src_image, use_center_roi=True):
+     image = test_src_image
+ 
+-    chans = cv2.split(image)
+-    colors = ('b', 'g', 'r')
+-    features = []
+-    feature_data = ''
+-    counter = 0
+-    for (chan, color) in zip(chans, colors):
+-        counter = counter + 1
+-
+-        hist = cv2.calcHist([chan], [0], None, [256], [0, 256])
+-        features.extend(hist)
+-
+-        # find the peak pixel values for R, G, and B
+-        elem = np.argmax(hist)
+-
+-        if counter == 1:
+-            blue = str(elem)
+-        elif counter == 2:
+-            green = str(elem)
+-        elif counter == 3:
+-            red = str(elem)
+-            feature_data = red + ',' + green + ',' + blue
+-            # print(feature_data)
++    if use_center_roi:
++        x1, y1, x2, y2 = get_center_roi(image)
++        region = image[y1:y2, x1:x2]
++        if region.size == 0:
++            region = image
++    else:
++        region = image
++
++    h, s, v = _dominant_hsv(region)
++    feature_data = f'{h},{s},{v}'
+ 
+     with open('test.data', 'w') as myfile:
+         myfile.write(feature_data)
+ 
+ 
+ def color_histogram_of_training_image(img_name):
+-
+-    # detect image color by using image file name to label training data
++    # detecta el color por el nombre/ruta del archivo para etiquetar el dato
+     if 'red' in img_name:
+         data_source = 'red'
+     elif 'yellow' in img_name:
+@@ -65,31 +162,17 @@ def color_histogram_of_training_image(img_name):
+         data_source = 'blue'
+     elif 'violet' in img_name:
+         data_source = 'violet'
++    else:
++        # no se pudo inferir la clase por el nombre: se ignora en vez de
++        # ensuciar el dataset con una etiqueta incorrecta
++        return
+ 
+-    # load the image
+     image = cv2.imread(img_name)
++    if image is None:
++        return
+ 
+-    chans = cv2.split(image)
+-    colors = ('b', 'g', 'r')
+-    features = []
+-    feature_data = ''
+-    counter = 0
+-    for (chan, color) in zip(chans, colors):
+-        counter = counter + 1
+-
+-        hist = cv2.calcHist([chan], [0], None, [256], [0, 256])
+-        features.extend(hist)
+-
+-        # find the peak pixel values for R, G, and B
+-        elem = np.argmax(hist)
+-
+-        if counter == 1:
+-            blue = str(elem)
+-        elif counter == 2:
+-            green = str(elem)
+-        elif counter == 3:
+-            red = str(elem)
+-            feature_data = red + ',' + green + ',' + blue
++    h, s, v = _dominant_hsv(image)
++    feature_data = f'{h},{s},{v}'
+ 
+     with open('training.data', 'a') as myfile:
+         myfile.write(feature_data + ',' + data_source + '\n')
+@@ -101,58 +184,10 @@ def training():
+     src_dir = os.path.dirname(module_dir)
+     training_dir = os.path.join(src_dir, 'training_dataset')
+ 
+-    # red color training images
+-    red_dir = os.path.join(training_dir, 'red')
+-    if os.path.isdir(red_dir):
+-        for f in os.listdir(red_dir):
+-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+-                color_histogram_of_training_image(os.path.join(red_dir, f))
+-
+-    # yellow color training images
+-    yellow_dir = os.path.join(training_dir, 'yellow')
+-    if os.path.isdir(yellow_dir):
+-        for f in os.listdir(yellow_dir):
+-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+-                color_histogram_of_training_image(os.path.join(yellow_dir, f))
+-
+-    # green color training images
+-    green_dir = os.path.join(training_dir, 'green')
+-    if os.path.isdir(green_dir):
+-        for f in os.listdir(green_dir):
+-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+-                color_histogram_of_training_image(os.path.join(green_dir, f))
+-
+-    # orange color training images
+-    orange_dir = os.path.join(training_dir, 'orange')
+-    if os.path.isdir(orange_dir):
+-        for f in os.listdir(orange_dir):
+-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+-                color_histogram_of_training_image(os.path.join(orange_dir, f))
+-
+-    # white color training images
+-    white_dir = os.path.join(training_dir, 'white')
+-    if os.path.isdir(white_dir):
+-        for f in os.listdir(white_dir):
+-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+-                color_histogram_of_training_image(os.path.join(white_dir, f))
+-
+-    # black color training images
+-    black_dir = os.path.join(training_dir, 'black')
+-    if os.path.isdir(black_dir):
+-        for f in os.listdir(black_dir):
+-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+-                color_histogram_of_training_image(os.path.join(black_dir, f))
+-
+-    # blue color training images
+-    blue_dir = os.path.join(training_dir, 'blue')
+-    if os.path.isdir(blue_dir):
+-        for f in os.listdir(blue_dir):
+-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+-                color_histogram_of_training_image(os.path.join(blue_dir, f))
+-    
+-    # violet color training images
+-    violet_dir = os.path.join(training_dir, 'violet')
+-    if os.path.isdir(violet_dir):
+-        for f in os.listdir(violet_dir):
+-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+-                color_histogram_of_training_image(os.path.join(violet_dir, f))
++    color_dirs = ['red', 'yellow', 'green', 'orange', 'white', 'black', 'blue', 'violet']
++    for color in color_dirs:
++        color_dir = os.path.join(training_dir, color)
++        if os.path.isdir(color_dir):
++            for f in os.listdir(color_dir):
++                if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
++                    color_histogram_of_training_image(os.path.join(color_dir, f))
+diff --git a/src/color_recognition_api/knn_classifier.py b/src/color_recognition_api/knn_classifier.py
+index 0160019..0aa4cc6 100644
+--- a/src/color_recognition_api/knn_classifier.py
++++ b/src/color_recognition_api/knn_classifier.py
+@@ -1,19 +1,25 @@
+ #!/usr/bin/python
+ # -*- coding: utf-8 -*-
+ # ----------------------------------------------
+-# --- Author         : Ahmet Ozlu
+-# --- Mail           : ahmetozlu93@gmail.com
+-# --- Date           : 31st December 2017 - new year eve :)
++# --- Original author : Ahmet Ozlu
++# --- Mejoras         : voto ponderado por distancia + k seguro
++# ----------------------------------------------
++#
++# CAMBIOS RESPECTO A LA VERSION ORIGINAL
++# ----------------------------------------------
++# - responseOfNeighbors ahora pondera cada vecino por 1/distancia en vez de
++#   contar todos los votos por igual. Con datasets de entrenamiento pequenos
++#   (por ejemplo la carpeta "blue" solo tiene 6 imagenes) un vecino lejano ya
++#   no puede empatar/ganarle a varios vecinos mucho mas cercanos.
++# - k se ajusta automaticamente para nunca superar la cantidad de datos de
++#   entrenamiento disponibles (evita errores si el dataset es muy chico).
+ # ----------------------------------------------
+ 
+ import csv
+-import random
+ import math
+ import operator
+-import cv2
+ 
+ 
+-# calculation of euclidead distance
+ def calculateEuclideanDistance(variable1, variable2, length):
+     distance = 0
+     for x in range(length):
+@@ -21,77 +27,66 @@ def calculateEuclideanDistance(variable1, variable2, length):
+     return math.sqrt(distance)
+ 
+ 
+-# get k nearest neigbors
+ def kNearestNeighbors(training_feature_vector, testInstance, k):
++    """Devuelve los k vecinos mas cercanos como pares (fila, distancia)."""
+     distances = []
+     length = len(testInstance)
+     for x in range(len(training_feature_vector)):
+-        dist = calculateEuclideanDistance(testInstance,
+-                training_feature_vector[x], length)
++        dist = calculateEuclideanDistance(testInstance, training_feature_vector[x], length)
+         distances.append((training_feature_vector[x], dist))
+     distances.sort(key=operator.itemgetter(1))
+-    
+-    # Use minimum of k and available data points
++
+     k_actual = min(k, len(distances))
+     if k_actual == 0:
+         raise ValueError("No training data available for classification")
+-    
+-    neighbors = []
+-    for x in range(k_actual):
+-        neighbors.append(distances[x][0])
+-    return neighbors
+-
+-
+-# votes of neighbors
+-def responseOfNeighbors(neighbors):
+-    all_possible_neighbors = {}
+-    for x in range(len(neighbors)):
+-        response = neighbors[x][-1]
+-        if response in all_possible_neighbors:
+-            all_possible_neighbors[response] += 1
+-        else:
+-            all_possible_neighbors[response] = 1
+-    sortedVotes = sorted(all_possible_neighbors.items(),
+-                         key=operator.itemgetter(1), reverse=True)
+-    return sortedVotes[0][0]
+-
+-
+-# Load image feature data to training feature vectors and test feature vector
+-def loadDataset(
+-    filename,
+-    filename2,
+-    training_feature_vector=[],
+-    test_feature_vector=[],
+-    ):
++
++    return distances[:k_actual]
++
++
++def responseOfNeighbors(neighbors_with_dist):
++    """Voto ponderado: los vecinos mas cercanos pesan mas que los lejanos."""
++    votes = {}
++    for (neighbor, dist) in neighbors_with_dist:
++        label = neighbor[-1]
++        weight = 1.0 / (dist + 1e-6)
++        votes[label] = votes.get(label, 0.0) + weight
++    return max(votes.items(), key=operator.itemgetter(1))[0]
++
++
++def loadDataset(filename, filename2, training_feature_vector=None, test_feature_vector=None):
++    if training_feature_vector is None:
++        training_feature_vector = []
++    if test_feature_vector is None:
++        test_feature_vector = []
++
+     with open(filename) as csvfile:
+-        lines = csv.reader(csvfile)
+-        dataset = list(lines)
++        dataset = list(csv.reader(csvfile))
+         if not dataset:
+             raise ValueError(f"Training data file '{filename}' is empty. Please ensure training images are in the training_dataset folder.")
+-        for x in range(len(dataset)):
++        for row in dataset:
+             for y in range(3):
+-                dataset[x][y] = float(dataset[x][y])
+-            training_feature_vector.append(dataset[x])
++                row[y] = float(row[y])
++            training_feature_vector.append(row)
+ 
+     with open(filename2) as csvfile:
+-        lines = csv.reader(csvfile)
+-        dataset = list(lines)
++        dataset = list(csv.reader(csvfile))
+         if not dataset:
+             raise ValueError(f"Test data file '{filename2}' is empty.")
+-        for x in range(len(dataset)):
++        for row in dataset:
+             for y in range(3):
+-                dataset[x][y] = float(dataset[x][y])
+-            test_feature_vector.append(dataset[x])
+-
+-
+-def main(training_data, test_data):
+-    training_feature_vector = []  # training feature vector
+-    test_feature_vector = []  # test feature vector
+-    loadDataset(training_data, test_data, training_feature_vector, test_feature_vector)
+-    classifier_prediction = []  # predictions
+-    k = 3  # K value of k nearest neighbor
+-    for x in range(len(test_feature_vector)):
+-        neighbors = kNearestNeighbors(training_feature_vector, test_feature_vector[x], k)
+-        result = responseOfNeighbors(neighbors)
+-        classifier_prediction.append(result)
+-    return classifier_prediction[0]		
++                row[y] = float(row[y])
++            test_feature_vector.append(row)
++
++    return training_feature_vector, test_feature_vector
++
++
++def main(training_data, test_data, k=5):
++    training_feature_vector, test_feature_vector = loadDataset(training_data, test_data)
++    # k nunca puede superar la cantidad de muestras de entrenamiento disponibles
++    k = max(1, min(k, len(training_feature_vector)))
++
++    predictions = []
++    for instance in test_feature_vector:
++        neighbors = kNearestNeighbors(training_feature_vector, instance, k)
++        predictions.append(responseOfNeighbors(neighbors))
++    return predictions[0]
+diff --git a/src/training.data b/src/training.data
+index 76bb7f3..111e992 100644
+--- a/src/training.data
++++ b/src/training.data
+@@ -1,67 +1,77 @@
+-139,0,0,red
+-204,22,0,red
+-206,0,25,red
+-220,0,3,red
+-254,0,0,red
+-61,13,3,red
+-128,24,24,red
+-174,32,26,red
+-254,0,2,red
+-209,23,23,red
+-255,255,0,yellow
+-255,242,39,yellow
+-249,217,94,yellow
+-252,234,4,yellow
+-255,183,9,yellow
+-247,224,23,yellow
+-254,242,0,yellow
+-246,191,39,yellow
+-255,215,12,yellow
+-255,166,0,yellow
+-159,217,140,green
+-125,194,75,green
+-37,202,38,green
+-0,166,82,green
+-64,189,85,green
+-0,128,1,green
+-35,67,17,green
+-123,252,1,green
+-0,255,0,green
+-33,83,54,green
+-125,232,88,green
+-252,79,19,orange
+-255,102,0,orange
+-255,127,0,orange
+-255,128,0,orange
+-255,103,0,orange
+-255,122,1,orange
+-254,101,33,orange
+-255,153,0,orange
+-255,103,0,orange
+-249,255,241,white
+-253,251,251,white
+-242,233,228,white
+-242,233,228,white
+-250,240,230,white
+-243,239,227,white
+-255,237,231,white
+-229,224,221,white
+-248,249,254,white
+-238,228,220,white
+-9,0,0,black
+-28,29,33,black
+-27,32,35,black
+-36,29,33,black
+-0,0,0,black
+-49,54,57,black
+-47,47,47,black
+-40,39,45,black
+-37,37,37,black
+-10,18,13,black
+-28,28,28,black
+-3,91,188,blue
+-0,0,254,blue
+-0,0,255,blue
+-1,119,193,blue
+-0,48,143,blue
+-0,0,154,blue
++1,253,255,red
++1,237,224,red
++1,246,255,red
++1,251,143,red
++254,255,207,red
++7,231,63,red
++1,200,134,red
++1,213,179,red
++6,253,209,red
++0,224,212,red
++28,251,255,yellow
++41,255,254,yellow
++38,231,248,yellow
++40,215,254,yellow
++34,159,249,yellow
++36,241,255,yellow
++43,255,255,yellow
++31,213,248,yellow
++40,249,252,yellow
++30,244,255,yellow
++85,251,130,green
++66,245,255,green
++67,154,199,green
++74,158,234,green
++107,255,169,green
++85,210,203,green
++103,145,86,green
++93,163,196,green
++76,90,218,green
++68,188,69,green
++84,248,255,green
++26,246,255,orange
++17,249,255,orange
++20,250,255,orange
++21,253,255,orange
++14,206,255,orange
++17,247,255,orange
++17,249,255,orange
++21,253,255,orange
++11,235,253,orange
++14,13,242,white
++0,0,248,white
++20,14,236,white
++11,24,255,white
++182,4,253,white
++0,2,250,white
++24,21,249,white
++34,16,245,white
++14,13,242,white
++16,9,232,white
++0,0,52,black
++0,0,34,black
++150,49,42,black
++141,43,59,black
++0,0,43,black
++0,0,13,black
++228,36,43,black
++192,28,36,black
++177,31,51,black
++0,0,4,black
++14,33,43,black
++158,244,145,blue
++171,250,255,blue
++145,241,194,blue
++172,245,255,blue
++175,238,162,blue
++152,231,192,blue
++195,237,255,violet
++199,190,249,violet
++192,245,244,violet
++201,234,216,violet
++195,197,255,violet
++198,249,255,violet
++195,237,255,violet
++195,189,255,violet
++195,237,255,violet
++191,247,255,violet
