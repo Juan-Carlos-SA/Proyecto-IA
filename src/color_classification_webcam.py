@@ -35,7 +35,13 @@ BLUR_THRESHOLD = 60          # mas bajo = mas tolerante a imagenes borrosas
 MIN_CONTRAST = 8              # por debajo de esto, la superficie es demasiado
                                # lisa/uniforme (mouse, pared, tela) como para
                                # medir enfoque de forma confiable
-SMOOTHING_WINDOW = 15         # cuantas predicciones recientes se promedian
+SMOOTHING_WINDOW = 7           # cuantas predicciones recientes se promedian.
+                               # Antes eran 15: con PROCESS_EVERY_N_FRAMES=2
+                               # eso significa esperar ~30 frames (mas de 1
+                               # segundo) para que la prediccion "alcance"
+                               # a un objeto nuevo colocado en el recuadro.
+                               # Con 7 reacciona mas rapido y sigue evitando
+                               # el parpadeo frame a frame.
 PROCESS_EVERY_N_FRAMES = 2    # analizar 1 de cada N frames (rendimiento)
 
 # Try to find an available camera

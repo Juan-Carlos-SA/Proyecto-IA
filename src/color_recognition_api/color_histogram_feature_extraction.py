@@ -75,14 +75,20 @@ def _valid_pixel_mask(hsv_image):
     """
     Descarta:
       - Sombra profunda: V bajo (< 40)
-      - Brillo quemado / reflejo especular: V muy alto (> 250) y S bajo (< 30)
+      - Brillo quemado / reflejo especular: V alto (> 220) y S bajo (< 30)
+    El umbral de V se bajo de 250 a 220: en superficies brillosas (plastico,
+    metal) el reflejo real casi nunca llega a V=255 exacto, se queda en un
+    rango un poco mas bajo (220-250) y con el umbral original se colaba sin
+    filtrar. El umbral de S se deja igual (<30) a proposito: colores pastel
+    reales (por ejemplo un rosa claro) tienen S bastante mas alto que eso,
+    asi que no se ven afectados por este cambio.
     Si casi todo queda descartado (p. ej. una imagen totalmente oscura o muy
     clara), se usan todos los pixeles como respaldo para no dejar la mascara
     vacia.
     """
     h, s, v = cv2.split(hsv_image)
     shadow_mask = v < 40
-    highlight_mask = (v > 250) & (s < 30)
+    highlight_mask = (v > 220) & (s < 30)
     invalid = shadow_mask | highlight_mask
     mask = np.uint8((~invalid) * 255)
     if cv2.countNonZero(mask) < 0.05 * mask.size:
