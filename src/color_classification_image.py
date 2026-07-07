@@ -70,12 +70,12 @@ else:
 
 # get the prediction
 color_histogram_feature_extraction.color_histogram_of_test_image(region_to_analyze, use_center_roi=False)
-prediction = knn_classifier.main('training.data', 'test.data')
-print('Detected color is:', prediction)
+prediction, confidence = knn_classifier.main('training.data', 'test.data')
+print(f'Detected color is: {prediction} (confianza: {confidence:.0f}%)')
 
 cv2.putText(
     source_image,
-    'Prediction: ' + prediction,
+    f'Prediction: {prediction} ({confidence:.0f}%)',
     (15, 45),
     cv2.FONT_HERSHEY_PLAIN,
     3,

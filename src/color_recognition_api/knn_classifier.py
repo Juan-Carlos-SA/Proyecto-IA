@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # ----------------------------------------------
 # --- Original author : Ahmet Ozlu
-# --- Mejoras         : voto ponderado por distancia + k seguro
+# --- Mejoras         : voto ponderado por distancia + k seguro + confianza
 # ----------------------------------------------
 #
 # CAMBIOS RESPECTO A LA VERSION ORIGINAL
@@ -13,6 +13,11 @@
 #   no puede empatar/ganarle a varios vecinos mucho mas cercanos.
 # - k se ajusta automaticamente para nunca superar la cantidad de datos de
 #   entrenamiento disponibles (evita errores si el dataset es muy chico).
+# - main() ahora tambien devuelve una "confianza" (0-100%): que porcentaje
+#   del voto total se lo llevo el color ganador. Si el ganador y el segundo
+#   lugar estan practicamente empatados, la confianza es baja y eso es una
+#   senal util para el usuario (en vez de mostrar un color al azar sin
+#   avisar que la lectura es dudosa).
 # ----------------------------------------------
 
 import csv
@@ -44,13 +49,21 @@ def kNearestNeighbors(training_feature_vector, testInstance, k):
 
 
 def responseOfNeighbors(neighbors_with_dist):
-    """Voto ponderado: los vecinos mas cercanos pesan mas que los lejanos."""
+    """
+    Voto ponderado: los vecinos mas cercanos pesan mas que los lejanos.
+    Devuelve (etiqueta_ganadora, confianza_0_a_100), donde la confianza es
+    el porcentaje del voto total que se llevo la etiqueta ganadora.
+    """
     votes = {}
     for (neighbor, dist) in neighbors_with_dist:
         label = neighbor[-1]
         weight = 1.0 / (dist + 1e-6)
         votes[label] = votes.get(label, 0.0) + weight
-    return max(votes.items(), key=operator.itemgetter(1))[0]
+
+    winner, winner_weight = max(votes.items(), key=operator.itemgetter(1))
+    total_weight = sum(votes.values())
+    confidence = (winner_weight / total_weight * 100.0) if total_weight > 0 else 0.0
+    return winner, confidence
 
 
 def loadDataset(filename, filename2, training_feature_vector=None, test_feature_vector=None):
@@ -81,6 +94,7 @@ def loadDataset(filename, filename2, training_feature_vector=None, test_feature_
 
 
 def main(training_data, test_data, k=5):
+    """Devuelve (prediccion, confianza_0_a_100) para la primera muestra de test_data."""
     training_feature_vector, test_feature_vector = loadDataset(training_data, test_data)
     # k nunca puede superar la cantidad de muestras de entrenamiento disponibles
     k = max(1, min(k, len(training_feature_vector)))

@@ -1,22 +1,6 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 # ----------------------------------------------
-# Interfaz grafica del clasificador de colores
-# ----------------------------------------------
-#
-# Dos pestanas:
-#   - "Imagen": boton para elegir un archivo de imagen desde tu compu y
-#     detectar su color dominante. Opcionalmente puedes arrastrar el mouse
-#     sobre ella para analizar solo una region.
-#   - "Camara": enciende la webcam dentro de la misma ventana y muestra la
-#     deteccion en vivo. Incluye una casilla para analizar solo la zona
-#     central (recomendado: evita que el fondo/mano contaminen la lectura)
-#     o el frame completo si lo prefieres.
-#
-# Usa las mismas funciones de color_recognition_api que los otros scripts,
-# asi que cualquier mejora a la extraccion de caracteristicas o al
-# clasificador aplica automaticamente aqui tambien.
-# ----------------------------------------------
 
 import os
 import queue
@@ -30,6 +14,7 @@ from PIL import Image, ImageTk
 
 from color_recognition_api import color_histogram_feature_extraction
 from color_recognition_api import knn_classifier
+from color_recognition_api import focus_utils
 
 # Aseguramos que las rutas relativas (training.data, test.data) apunten
 # siempre a la carpeta src/, sin importar desde donde se ejecute el script.
@@ -37,12 +22,41 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(SCRIPT_DIR)
 
 TRAINING_DATA_PATH = './training.data'
+ASSETS_DIR = os.path.join(SCRIPT_DIR, 'assets')
 
 # Mismos parametros que color_classification_webcam.py
 BLUR_THRESHOLD = 60
 MIN_CONTRAST = 8
 SMOOTHING_WINDOW = 7
 PROCESS_EVERY_N_FRAMES = 2
+MIN_CONFIDENCE = 40  # por debajo de este % de confianza, la lectura no se toma en cuenta
+
+INSTRUCTIONS_TEXT = (
+    "COMO USAR ESTA INTERFAZ\n\n"
+    "Pestana 'Imagen'\n"
+    "  1. Pulsa 'Subir imagen...' y elige una foto de tu computadora.\n"
+    "  2. (Opcional) Arrastra el mouse sobre la imagen para marcar solo\n"
+    "     la parte que quieres analizar, asi el fondo no afecta el resultado.\n"
+    "  3. Pulsa 'Detectar color' para ver la prediccion y su confianza.\n"
+    "  4. 'Quitar seleccion' vuelve a usar la imagen completa.\n\n"
+    "Pestana 'Camara'\n"
+    "  1. Pulsa 'Iniciar camara'.\n"
+    "  2. Coloca el objeto a identificar dentro del recuadro verde central,\n"
+    "     ocupando la mayor parte posible del recuadro.\n"
+    "  3. Observa la barra de 'Enfoque': si esta baja (naranja/roja), aleja\n"
+    "     o acerca el objeto, mejora la luz, o pulsa 'Reenfocar'.\n"
+    "  4. La prediccion y su confianza (%) aparecen debajo del video.\n"
+    "     Una confianza baja significa que la lectura es poco confiable\n"
+    "     (prueba con mejor luz o centrando mejor el objeto).\n"
+    "  5. Desmarca 'Analizar solo el centro' si prefieres usar el frame\n"
+    "     completo (no recomendado si hay varios colores en camara).\n"
+    "  6. 'Detener camara' apaga la webcam.\n\n"
+    "Consejos para mejores resultados\n"
+    "  - Usa luz uniforme (evita contraluz y sombras fuertes sobre el objeto).\n"
+    "  - Evita superficies muy brillantes/reflectantes.\n"
+    "  - Mantén la camara quieta unos segundos para que la prediccion se\n"
+    "    estabilice (se promedian varias lecturas recientes).\n"
+)
 
 # --- Paleta de la interfaz ---
 BG_DARK = '#1b1e26'
@@ -74,12 +88,20 @@ def ensure_training_data():
     color_histogram_feature_extraction.training()
 
 
-def is_blurry(gray_image, threshold=BLUR_THRESHOLD, min_contrast=MIN_CONTRAST):
-    # Una superficie lisa (poco contraste) no permite medir enfoque de forma
-    # confiable, se asume que esta bien enfocada en ese caso.
-    if gray_image.std() < min_contrast:
-        return False
-    return cv2.Laplacian(gray_image, cv2.CV_64F).var() < threshold
+def load_logo_image(filename, target_height):
+    """Carga un logo desde src/assets/, lo escala a target_height de alto
+    (manteniendo proporcion) y devuelve un ImageTk.PhotoImage listo para
+    usar en un Label. Si el archivo no existe, devuelve None sin romper
+    la interfaz (por si algun logo llegara a faltar)."""
+    path = os.path.join(ASSETS_DIR, filename)
+    if not os.path.isfile(path):
+        return None
+    img = Image.open(path).convert('RGBA')
+    w, h = img.size
+    scale = target_height / h
+    new_size = (max(1, int(w * scale)), target_height)
+    img = img.resize(new_size, Image.LANCZOS)
+    return ImageTk.PhotoImage(img)
 
 
 def bgr_to_photoimage(bgr_image, max_size):
@@ -297,8 +319,8 @@ class ImageTab(ttk.Frame):
         try:
             ensure_training_data()
             color_histogram_feature_extraction.color_histogram_of_test_image(region, use_center_roi=False)
-            prediction = knn_classifier.main(TRAINING_DATA_PATH, 'test.data')
-            self.badge.set_result(prediction, swatch_color_for(prediction))
+            prediction, confidence = knn_classifier.main(TRAINING_DATA_PATH, 'test.data')
+            self.badge.set_result(f'{prediction} ({confidence:.0f}%)', swatch_color_for(prediction))
         except Exception as exc:  # noqa: BLE001 - se muestra cualquier error al usuario
             messagebox.showerror('Error al clasificar', str(exc))
 
@@ -322,14 +344,19 @@ class CameraTab(ttk.Frame):
 
         self.recent_predictions = deque(maxlen=SMOOTHING_WINDOW)
         self.stable_prediction = 'n.a.'
+        self.last_confidence = 0.0
         self.frame_count = 0
         self.use_center_only = tk.BooleanVar(value=True)
+        self.request_refocus = threading.Event()
+        self._refocus_just_completed = False
+        self.refocus_status = tk.StringVar(value='')
 
         ttk.Label(self, text='Deteccion de color en vivo', style='Title.TLabel').pack(anchor='w', pady=(0, 4))
         ttk.Label(
             self,
             text='Si hay fondo, mano u otros objetos en camara, activa "solo el centro" para leer\n'
-                 'unicamente lo que este dentro del recuadro y evitar lecturas mezcladas.',
+                 'unicamente lo que este dentro del recuadro y evitar lecturas mezcladas. Coloca el\n'
+                 'objeto llenando el recuadro y observa la barra de enfoque debajo del video.',
             style='Muted.TLabel', justify='left',
         ).pack(anchor='w', pady=(0, 12))
 
@@ -339,6 +366,8 @@ class CameraTab(ttk.Frame):
         self.start_btn.pack(side='left', padx=(0, 8))
         self.stop_btn = ttk.Button(controls, text='Detener camara', style='Ghost.TButton', command=self.stop_camera, state='disabled')
         self.stop_btn.pack(side='left', padx=8)
+        self.refocus_btn = ttk.Button(controls, text='Reenfocar', style='Ghost.TButton', command=self.request_refocus_now, state='disabled')
+        self.refocus_btn.pack(side='left', padx=8)
         ttk.Checkbutton(
             controls, text='Analizar solo el centro (recomendado)',
             variable=self.use_center_only,
@@ -358,8 +387,21 @@ class CameraTab(ttk.Frame):
         self.video_label = tk.Label(video_wrap, image=self.placeholder_img, bg=BG_VIDEO, bd=0)
         self.video_label.pack(padx=1, pady=1)
 
+        focus_row = ttk.Frame(self)
+        focus_row.pack(fill='x', pady=(10, 0))
+        ttk.Label(focus_row, text='Enfoque:', style='Muted.TLabel').pack(side='left', padx=(0, 8))
+        self.focus_bar = ttk.Progressbar(focus_row, length=200, maximum=100, mode='determinate')
+        self.focus_bar.pack(side='left')
+        self.focus_pct_label = ttk.Label(focus_row, text='0%', style='Muted.TLabel')
+        self.focus_pct_label.pack(side='left', padx=(8, 0))
+        ttk.Label(focus_row, textvariable=self.refocus_status, style='Muted.TLabel').pack(side='left', padx=(16, 0))
+
         self.badge = PredictionBadge(self)
         self.badge.pack(fill='x', pady=(16, 0))
+
+    def request_refocus_now(self):
+        self.request_refocus.set()
+        self.refocus_status.set('Recalibrando enfoque...')
 
     def start_camera(self):
         if self.running:
@@ -385,27 +427,33 @@ class CameraTab(ttk.Frame):
             messagebox.showerror('Camara no encontrada', 'No se pudo abrir ninguna camara. Revisa la conexion (o DroidCam).')
             return
 
-        # Intento de activar autoenfoque. No todas las camaras/drivers (por
-        # ejemplo DroidCam por red) soportan controlar esto desde OpenCV, asi
-        # que si falla simplemente se ignora sin afectar el resto.
-        try:
-            cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-        except Exception:
-            pass
+        # Intento de activar autoenfoque continuo. No todas las camaras/
+        # drivers (por ejemplo DroidCam por red) lo soportan desde OpenCV;
+        # si falla, se ignora. El boton "Reenfocar" siempre queda disponible
+        # como respaldo manual.
+        focus_utils.try_enable_autofocus(cap)
 
         self.cap = cap
         self.running = True
         self.stop_event.clear()
+        self.request_refocus.clear()
         self.recent_predictions.clear()
         self.stable_prediction = 'n.a.'
+        self.last_confidence = 0.0
         self.frame_count = 0
+        self.refocus_status.set('')
 
         self.start_btn.config(state='disabled')
         self.stop_btn.config(state='normal')
+        self.refocus_btn.config(state='normal')
 
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
         self.after(15, self._update_gui)
+
+    def _roi_gray_of(self, frame):
+        x1, y1, x2, y2 = color_histogram_feature_extraction.get_center_roi(frame, roi_ratio=self.ROI_RATIO)
+        return cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
 
     def _capture_loop(self):
         # Corre en un hilo aparte para que leer la camara no trabe la
@@ -413,6 +461,14 @@ class CameraTab(ttk.Frame):
         # el hilo principal (Tkinter no es seguro de actualizar desde otro
         # hilo).
         while not self.stop_event.is_set():
+            if self.request_refocus.is_set():
+                focus_utils.autofocus_sweep(self.cap, self._roi_gray_of)
+                self.request_refocus.clear()
+                self.recent_predictions.clear()
+                # No se toca el StringVar de Tkinter desde este hilo; se
+                # deja una bandera simple que _update_gui (hilo principal)
+                # revisa para actualizar el texto de forma segura.
+                self._refocus_just_completed = True
             ret, frame = self.cap.read()
             if not ret or frame is None:
                 continue
@@ -439,6 +495,11 @@ class CameraTab(ttk.Frame):
         self.frame_count += 1
         center_mode = self.use_center_only.get()
 
+        if self._refocus_just_completed:
+            self._refocus_just_completed = False
+            self.refocus_status.set('Enfoque recalibrado')
+            self.after(2500, lambda: self.refocus_status.set(''))
+
         # Zona a analizar: el centro (si esta activado) o el frame completo
         if center_mode:
             x1, y1, x2, y2 = color_histogram_feature_extraction.get_center_roi(frame, roi_ratio=self.ROI_RATIO)
@@ -449,25 +510,39 @@ class CameraTab(ttk.Frame):
         status_text = self.stable_prediction
         badge_color = swatch_color_for(self.stable_prediction) if self.stable_prediction != 'n.a.' else None
         text_color = TEXT_LIGHT
+        sharpness_pct = 0.0
 
-        if analysis_region.size > 0 and self.frame_count % PROCESS_EVERY_N_FRAMES == 0:
+        if analysis_region.size > 0:
             gray = cv2.cvtColor(analysis_region, cv2.COLOR_BGR2GRAY)
-            if is_blurry(gray):
-                status_text = 'Desenfocado - ajusta el enfoque'
-                text_color = DANGER
-                badge_color = '#4a2f2f'
-            else:
-                try:
-                    color_histogram_feature_extraction.color_histogram_of_test_image(analysis_region, use_center_roi=False)
-                    prediction = knn_classifier.main(TRAINING_DATA_PATH, 'test.data')
-                    self.recent_predictions.append(prediction)
-                    self.stable_prediction = Counter(self.recent_predictions).most_common(1)[0][0]
-                    status_text = self.stable_prediction
-                    badge_color = swatch_color_for(status_text)
-                except Exception:
-                    pass
+            sharpness_pct = focus_utils.sharpness_percent(gray)
 
-        self.badge.set_result(status_text, badge_color, text_color)
+            if self.frame_count % PROCESS_EVERY_N_FRAMES == 0:
+                if focus_utils.is_blurry(gray, threshold=BLUR_THRESHOLD, min_contrast=MIN_CONTRAST):
+                    # Imagen desenfocada: no se actualiza el badge, se mantiene
+                    # la ultima prediccion estable visible (la barra de nitidez
+                    # ya le indica al usuario que debe ajustar el enfoque).
+                    pass
+                else:
+                    try:
+                        color_histogram_feature_extraction.color_histogram_of_test_image(analysis_region, use_center_roi=False)
+                        prediction, confidence = knn_classifier.main(TRAINING_DATA_PATH, 'test.data')
+                        if confidence >= MIN_CONFIDENCE:
+                            self.recent_predictions.append(prediction)
+                            self.last_confidence = confidence
+                        if self.recent_predictions:
+                            self.stable_prediction = Counter(self.recent_predictions).most_common(1)[0][0]
+                        status_text = self.stable_prediction
+                        badge_color = swatch_color_for(status_text)
+                    except Exception:
+                        pass
+
+        self.focus_bar['value'] = sharpness_pct
+        self.focus_pct_label.config(text=f'{int(sharpness_pct)}%')
+
+        display_text = status_text
+        if status_text != 'n.a.':
+            display_text = f'{status_text} ({int(self.last_confidence)}%)'
+        self.badge.set_result(display_text, badge_color, text_color)
 
         # Dibujar guia visual del recuadro central cuando ese modo esta activo
         display_frame = frame
@@ -484,12 +559,17 @@ class CameraTab(ttk.Frame):
     def stop_camera(self):
         self.running = False
         self.stop_event.set()
+        self.request_refocus.clear()
         if self.capture_thread:
             self.capture_thread.join(timeout=1)
         if self.cap:
             self.cap.release()
         self.cap = None
 
+        self.refocus_btn.config(state='disabled')
+        self.refocus_status.set('')
+        self.focus_bar['value'] = 0
+        self.focus_pct_label.config(text='0%')
         self.start_btn.config(state='normal')
         self.stop_btn.config(state='disabled')
         self.video_label.config(image=self.placeholder_img)
@@ -500,11 +580,31 @@ class ColorClassifierApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('Detector de colores')
-        self.geometry('700x860')
-        self.minsize(650, 740)
+        self.geometry('700x900')
+        self.minsize(650, 780)
         self.configure(bg=BG_DARK)
 
         configure_style()
+
+        # --- Fila superior: logo TecNM (izquierda) y logo ITSR (derecha) ---
+        logos_row = ttk.Frame(self)
+        logos_row.pack(fill='x', padx=10, pady=(10, 0))
+
+        # Guardamos referencia en self para que el garbage collector no las borre
+        self.logo_tecnm_img = load_logo_image('logo_tecnm.png', target_height=100)
+        self.logo_itsr_img = load_logo_image('logo_itsr.png', target_height=100)
+
+        if self.logo_tecnm_img:
+            ttk.Label(logos_row, image=self.logo_tecnm_img, style='TLabel').pack(side='left')
+        if self.logo_itsr_img:
+            ttk.Label(logos_row, image=self.logo_itsr_img, style='TLabel').pack(side='right')
+
+        # --- Fila de titulo y boton de ayuda, debajo de los logos ---
+        header = ttk.Frame(self)
+        header.pack(fill='x', padx=10, pady=(8, 0))
+        ttk.Label(header, text='Detector de colores', style='Title.TLabel').pack(side='left')
+        ttk.Button(header, text='Ayuda / Instrucciones', style='Ghost.TButton',
+                   command=self.show_help).pack(side='right')
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill='both', expand=True, padx=10, pady=10)
@@ -515,6 +615,9 @@ class ColorClassifierApp(tk.Tk):
         notebook.add(self.camera_tab, text='  Camara  ')
 
         self.protocol('WM_DELETE_WINDOW', self.on_close)
+
+    def show_help(self):
+        messagebox.showinfo('Como usar la interfaz', INSTRUCTIONS_TEXT)
 
     def on_close(self):
         self.camera_tab.stop_camera()

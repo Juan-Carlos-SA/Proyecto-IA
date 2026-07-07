@@ -19,6 +19,73 @@ You can use [color_recognition_api](https://github.com/ahmetozlu/color_recogniti
 </p>
 
 ---
+
+## Instrucciones de uso
+
+### 1. Instalacion
+
+```bash
+pip install -r requirements.txt
+```
+
+(`requirements.txt` incluye `opencv-python`, `numpy` y `Pillow`, esta ultima solo la necesita la interfaz grafica.)
+
+La primera vez que corras cualquiera de los scripts, se genera automaticamente el archivo `training.data` a partir de las imagenes en `src/training_dataset/`. Puede tardar unos segundos; las siguientes ejecuciones son instantaneas porque el archivo ya queda listo.
+
+### 2. Interfaz grafica (recomendada): `color_classification_gui.py`
+
+```bash
+cd src
+python color_classification_gui.py
+```
+
+Es la forma mas facil de usar el proyecto. Tiene un boton **"Ayuda / Instrucciones"** en la parte superior que muestra en cualquier momento la guia completa dentro de la propia app. En resumen:
+
+- **Pestana "Imagen":** sube una foto con "Subir imagen...", opcionalmente arrastra el mouse sobre ella para marcar solo el objeto (asi el fondo no se mezcla en la lectura) y pulsa "Detectar color". El resultado se muestra con su **porcentaje de confianza**.
+- **Pestana "Camara":**
+  1. Pulsa **"Iniciar camara"**.
+  2. Coloca el objeto a identificar **dentro del recuadro verde central**, ocupando la mayor parte posible del recuadro.
+  3. Mira la barra **"Enfoque"**: si esta en naranja/rojo, la lectura no es confiable. Acerca o aleja el objeto hasta que la camara enfoque, mejora la iluminacion, o pulsa **"Reenfocar"** para forzar una recalibracion del foco (util si la camara no enfoca sola, algo comun con DroidCam o camaras USB baratas).
+  4. La prediccion aparece debajo del video junto a su confianza (%). Si la confianza es baja, la lectura se ignora automaticamente en vez de mostrar un color al azar.
+  5. Desmarca "Analizar solo el centro" si prefieres que se analice el frame completo (no recomendado si hay varios objetos/colores dentro de camara).
+  6. Pulsa **"Detener camara"** para apagarla.
+
+### 3. Deteccion en vivo por linea de comandos: `color_classification_webcam.py`
+
+```bash
+cd src
+python color_classification_webcam.py
+```
+
+Abre una ventana con el video de la camara. Coloca el objeto dentro del **recuadro central** que se dibuja en pantalla; ahi es donde se lee el color, no en el resto del frame. Debajo de la prediccion (que incluye su % de confianza) se muestra una barra de nitidez en vivo.
+
+Controles de teclado (tambien listados en la parte inferior de la ventana):
+
+| Tecla | Accion |
+|---|---|
+| `f` | Recalibra el enfoque manualmente |
+| `q` | Cierra el programa |
+
+### 4. Deteccion sobre una imagen suelta: `color_classification_image.py`
+
+```bash
+cd src
+python color_classification_image.py ruta/a/tu/imagen.jpg
+```
+
+Si tienes entorno grafico disponible, primero se abre una ventana para que arrastres el mouse y selecciones la region exacta a analizar (ENTER confirma, ESC usa la imagen completa). El resultado se muestra en una ventana con la prediccion y su confianza; si no hay entorno grafico (por ejemplo al correrlo en un servidor por SSH), se analiza la imagen completa y el resultado se guarda como `resultado.jpg` en la carpeta `src/`.
+
+### Consejos para mejores resultados
+
+- **Iluminacion uniforme:** evita contraluz y sombras fuertes sobre el objeto; la luz natural difusa o luz blanca uniforme da mejores lecturas que luces de colores o muy tenues.
+- **Evita superficies muy brillantes o reflectantes:** los reflejos especulares se descartan automaticamente, pero un objeto extremadamente brilloso igual puede confundir la lectura.
+- **Llena el recuadro:** entre mas espacio del recuadro central ocupe el objeto (y menos fondo se cuele), mas precisa es la deteccion.
+- **Dale un segundo a que se estabilice:** la prediccion se calcula promediando varias lecturas recientes para evitar que "parpadee" entre colores; mantener el objeto quieto un momento mejora el resultado.
+- **Si la camara no enfoca:** usa el boton "Reenfocar" (GUI) o la tecla `f` (script de webcam) para forzar una recalibracion manual del foco.
+- **Agregar o mejorar colores:** si un color se confunde seguido, agrega mas fotos representativas a la carpeta correspondiente dentro de `src/training_dataset/` (o crea una carpeta nueva para un color que no exista todavia) y borra `src/training.data` para que se regenere con los nuevos ejemplos.
+
+---
+
 **What does this program do?**
 1. **Feature Extraction:** Perform feature extraction for getting the R, G, B Color Histogram values of [training images](https://github.com/ahmetozlu/color_classifier/tree/master/src/training_dataset)
 2. **Training K-Nearest Neighbors Classifier:** Train KNN classifier by R, G, B Color Histogram values
@@ -121,6 +188,18 @@ You can find features are got from training data in [here](https://raw.githubuse
 I think, the training data has a huge important in classification accuracy. I created my training data carefully but maybe the accuracy can be higher with more suitable training data.
 
 Another important thing is lightning and shadows. In my test images, the images which were taken under bad lighting conditions and with shadows are classified wrong (false positives), maybe some filtering algorithm should/can be implemented before the test images send to KNN classifier Thus, accuracy can be improved.
+
+### Mejoras aplicadas a esta version
+
+Sobre la version original, este proyecto ahora incluye:
+
+- **Extraccion de color mas robusta ante iluminacion:** trabaja en espacio HSV en vez de RGB puro, aplica CLAHE para atenuar diferencias de exposicion, descarta pixeles de sombra/brillo quemado y trata el tono como una magnitud circular (para que rojos cercanos a 0°/360° no se traten como opuestos).
+- **Deteccion por region central (ROI):** tanto la webcam como la GUI analizan solo el recuadro central en vez del frame completo, para que el fondo o la mano que sostiene el objeto no contaminen la lectura.
+- **Confianza de la prediccion:** el clasificador KNN ahora devuelve, ademas del color, un porcentaje de confianza (voto ponderado por distancia); las lecturas de baja confianza se descartan en vez de mostrarse como si fueran seguras.
+- **Enfoque:** se intenta activar el autoenfoque continuo de la camara y, como respaldo, se puede recalibrar el foco manualmente en cualquier momento (tecla `f` en el script de webcam, boton "Reenfocar" en la GUI). Una barra de nitidez en vivo muestra que tan enfocada esta la imagen, y las lecturas se bloquean mientras la imagen esta demasiado borrosa.
+- **Interfaz grafica con instrucciones integradas:** la app de escritorio (`color_classification_gui.py`) incluye un boton de Ayuda con la guia completa de uso, ademas de indicaciones visuales (recuadro, barra de nitidez, badge de color) en la propia ventana.
+
+Ver la seccion [Instrucciones de uso](#instrucciones-de-uso) mas arriba para el detalle de como usar cada script.
 
 ## Citation
 If you use this code for your publications, please cite it as:
