@@ -2,18 +2,8 @@
 # -*- coding: utf-8 -*-
 # -------------------------------------------------------------------------
 # --- Original author : Ahmet Ozlu
-# --- Mejoras         : seleccion opcional de ROI, manejo de errores
 # -------------------------------------------------------------------------
 #
-# CAMBIOS RESPECTO A LA VERSION ORIGINAL
-# ----------------------------------------------
-# 1) Se puede seleccionar con el mouse la region exacta del objeto a
-#    clasificar (arrastrando un recuadro). Asi el fondo de la foto no se
-#    mezcla en el calculo del color. Si no hay entorno grafico disponible
-#    (por ejemplo al correrlo en un servidor), simplemente usa la imagen
-#    completa sin pedir seleccion.
-# 2) Manejo de errores si la ruta de imagen no existe o no se pudo leer.
-# -------------------------------------------------------------------------
 
 import cv2
 from color_recognition_api import color_histogram_feature_extraction
@@ -63,9 +53,7 @@ else:
     color_histogram_feature_extraction.training()
     print('training data is ready, classifier is loading...')
 
-# Seleccion opcional de la region de interes: evita que el color de fondo
-# contamine la lectura. Si no hay ventana grafica disponible, se usa toda
-# la imagen automaticamente.
+
 region_to_analyze = source_image
 if HAS_DISPLAY:
     try:
