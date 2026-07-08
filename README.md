@@ -4,6 +4,18 @@ This project focuses on color classifying by K-Nearest Neighbors Machine Learnin
 
 You can use [color_recognition_api](https://github.com/ahmetozlu/color_recognition/tree/master/src/color_recognition_api) to perform real-time color recognition in your projects. You can find a sample usage of [color_recognition_api](https://github.com/ahmetozlu/color_recognition/tree/master/src/color_recognition_api) in this [**repo**](https://github.com/ahmetozlu/vehicle_counting_tensorflow). ***Please contact if you need professional color recognition project with the super high accuracy!***
 
+## Quick Start (Inicio Rápido)
+
+**Windows:**
+1. Ejecuta `install.bat` (solo la primera vez)
+2. Luego ejecuta `run_gui.bat`
+
+**macOS/Linux:**
+1. Ejecuta `bash install.sh` (solo la primera vez)
+2. Luego ejecuta `bash run_gui.sh`
+
+¡Sin necesidad de entorno virtual! Las dependencias se instalan automáticamente.
+
 ## Quick Demo
 
 ***Run [color_classification_webcam.py](https://github.com/ahmetozlu/color_recognition/blob/master/src/color_classification_webcam.py) to perform real-time color recognition on a webcam stream.***
@@ -22,22 +34,49 @@ You can use [color_recognition_api](https://github.com/ahmetozlu/color_recogniti
 
 ## Instrucciones de uso
 
-### 1. Instalacion
+### Opcion 1: Forma mas facil (recomendada - Sin entorno virtual)
+
+#### Primer paso: Instalar dependencias
+
+**Windows:**
+```bash
+install.bat
+```
+
+**macOS/Linux:**
+```bash
+bash install.sh
+```
+
+Este script verifica que tengas Python instalado e instala automaticamente todas las dependencias necesarias.
+
+#### Segundo paso: Ejecutar el programa
+
+**Windows:**
+```bash
+run_gui.bat
+```
+
+**macOS/Linux:**
+```bash
+bash run_gui.sh
+```
+
+El programa se ejecutara sin necesidad de entorno virtual. ¡Facilisimo para compartir con otros!
+
+> **Nota:** La primera vez que ejecutes el programa puede tardar unos segundos porque genera automaticamente el archivo `training.data` a partir de las imagenes en `src/training_dataset/`. Las siguientes ejecuciones son instantaneas.
+
+### Opcion 2: Instalacion manual (con entorno virtual)
+
+Si prefieres mayor control o usar entorno virtual:
 
 ```bash
 pip install -r requirements.txt
-```
-
-(`requirements.txt` incluye `opencv-python`, `numpy` y `Pillow`, esta ultima solo la necesita la interfaz grafica.)
-
-La primera vez que corras cualquiera de los scripts, se genera automaticamente el archivo `training.data` a partir de las imagenes en `src/training_dataset/`. Puede tardar unos segundos; las siguientes ejecuciones son instantaneas porque el archivo ya queda listo.
-
-### 2. Interfaz grafica (recomendada): `color_classification_gui.py`
-
-```bash
 cd src
 python color_classification_gui.py
 ```
+
+### Interfaz grafica: `color_classification_gui.py`
 
 Es la forma mas facil de usar el proyecto. Tiene un boton **"Ayuda / Instrucciones"** en la parte superior que muestra en cualquier momento la guia completa dentro de la propia app. En resumen:
 

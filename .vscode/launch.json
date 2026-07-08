@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Color Recognition GUI",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/color_classification_gui.py",
+      "cwd": "${workspaceFolder}/src",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

@@ -1,6 +1,26 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 # ----------------------------------------------
+# Interfaz grafica del clasificador de colores
+# ----------------------------------------------
+#
+# Dos pestanas:
+#   - "Imagen": boton para elegir un archivo de imagen desde tu compu y
+#     detectar su color dominante. Opcionalmente puedes arrastrar el mouse
+#     sobre ella para analizar solo una region.
+#   - "Camara": enciende la webcam dentro de la misma ventana y muestra la
+#     deteccion en vivo. Incluye una casilla para analizar solo la zona
+#     central (recomendado: evita que el fondo/mano contaminen la lectura)
+#     o el frame completo si lo prefieres, un boton para recalibrar el
+#     enfoque manualmente y una barra que muestra la nitidez en vivo.
+#
+# Un boton "Ayuda" en la parte superior abre las instrucciones completas de
+# uso de la interfaz en cualquier momento.
+#
+# Usa las mismas funciones de color_recognition_api que los otros scripts,
+# asi que cualquier mejora a la extraccion de caracteristicas o al
+# clasificador aplica automaticamente aqui tambien.
+# ----------------------------------------------
 
 import os
 import queue
@@ -192,7 +212,32 @@ class ImageTab(ttk.Frame):
     CANVAS_SIZE = 520
 
     def __init__(self, master):
-        super().__init__(master, padding=16)
+        super().__init__(master)
+
+        # Crear Canvas y Scrollbar
+        self.canvas_scroll = tk.Canvas(self, bg=BG_DARK, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient='vertical', command=self.canvas_scroll.yview)
+        self.canvas_scroll.configure(yscrollcommand=scrollbar.set)
+
+        # Poner el Canvas y Scrollbar en grid
+        self.canvas_scroll.grid(row=0, column=0, sticky='nsew')
+        scrollbar.grid(row=0, column=1, sticky='ns')
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # Frame dentro del Canvas que contiene todo el contenido
+        self.content_frame = ttk.Frame(self.canvas_scroll)
+        self.canvas_window = self.canvas_scroll.create_window(0, 0, window=self.content_frame, anchor='nw')
+
+        # Bind del evento de redimensionamiento
+        self.content_frame.bind('<Configure>', self._on_content_change)
+        self.canvas_scroll.bind('<MouseWheel>', self._on_mousewheel)
+        self.canvas_scroll.bind('<Button-4>', self._on_mousewheel)  # Linux scroll up
+        self.canvas_scroll.bind('<Button-5>', self._on_mousewheel)  # Linux scroll down
+
+        # Agregar padding al content_frame
+        main_content = ttk.Frame(self.content_frame, padding=16)
+        main_content.pack(fill='both', expand=True)
 
         self.image_bgr = None       # imagen original cargada (sin redimensionar)
         self.display_scale = 1.0    # factor imagen_mostrada -> imagen_original
@@ -201,20 +246,20 @@ class ImageTab(ttk.Frame):
         self.tk_img = None
         self.rect_id = None
 
-        ttk.Label(self, text='Detectar color en una imagen', style='Title.TLabel').pack(anchor='w', pady=(0, 4))
+        ttk.Label(main_content, text='Detectar color en una imagen', style='Title.TLabel').pack(anchor='w', pady=(0, 4))
         ttk.Label(
-            self,
+            main_content,
             text='Sube una foto y opcionalmente arrastra el mouse sobre ella para elegir solo una parte.',
             style='Muted.TLabel',
         ).pack(anchor='w', pady=(0, 12))
 
-        controls = ttk.Frame(self)
+        controls = ttk.Frame(main_content)
         controls.pack(fill='x', pady=(0, 10))
         ttk.Button(controls, text='Subir imagen...', style='Accent.TButton', command=self.select_image).pack(side='left', padx=(0, 8))
         ttk.Button(controls, text='Detectar color', style='Accent.TButton', command=self.detect).pack(side='left', padx=8)
         ttk.Button(controls, text='Quitar seleccion', style='Ghost.TButton', command=self.clear_roi).pack(side='left', padx=8)
 
-        canvas_wrap = tk.Frame(self, bg='#000000')
+        canvas_wrap = tk.Frame(main_content, bg='#000000')
         canvas_wrap.pack()
         self.canvas = tk.Canvas(canvas_wrap, width=self.CANVAS_SIZE, height=self.CANVAS_SIZE,
                                  bg=BG_VIDEO, highlightthickness=1, highlightbackground='#3a3f4d')
@@ -223,10 +268,22 @@ class ImageTab(ttk.Frame):
         self.canvas.bind('<B1-Motion>', self.on_drag)
         self.canvas.bind('<ButtonRelease-1>', self.on_release)
 
-        self.badge = PredictionBadge(self)
+        self.badge = PredictionBadge(main_content)
         self.badge.pack(fill='x', pady=(16, 0))
 
         self._draw_placeholder()
+
+    def _on_content_change(self, event):
+        """Actualizar la region scrolleable cuando el contenido cambia de tamaño"""
+        self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox('all'))
+        self.canvas_scroll.itemconfig(self.canvas_window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        """Manejar la rueda del mouse para desplazamiento"""
+        if event.num == 5 or event.delta < 0:
+            self.canvas_scroll.yview_scroll(3, 'units')
+        elif event.num == 4 or event.delta > 0:
+            self.canvas_scroll.yview_scroll(-3, 'units')
 
     def _draw_placeholder(self):
         self.canvas.delete('all')
@@ -334,7 +391,32 @@ class CameraTab(ttk.Frame):
     ROI_RATIO = 0.45  # fraccion de la dimension menor que cubre la zona central
 
     def __init__(self, master):
-        super().__init__(master, padding=16)
+        super().__init__(master)
+
+        # Crear Canvas y Scrollbar
+        self.canvas_scroll = tk.Canvas(self, bg=BG_DARK, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient='vertical', command=self.canvas_scroll.yview)
+        self.canvas_scroll.configure(yscrollcommand=scrollbar.set)
+
+        # Poner el Canvas y Scrollbar en grid
+        self.canvas_scroll.grid(row=0, column=0, sticky='nsew')
+        scrollbar.grid(row=0, column=1, sticky='ns')
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # Frame dentro del Canvas que contiene todo el contenido
+        self.content_frame = ttk.Frame(self.canvas_scroll)
+        self.canvas_window = self.canvas_scroll.create_window(0, 0, window=self.content_frame, anchor='nw')
+
+        # Bind del evento de redimensionamiento
+        self.content_frame.bind('<Configure>', self._on_content_change)
+        self.canvas_scroll.bind('<MouseWheel>', self._on_mousewheel)
+        self.canvas_scroll.bind('<Button-4>', self._on_mousewheel)  # Linux scroll up
+        self.canvas_scroll.bind('<Button-5>', self._on_mousewheel)  # Linux scroll down
+
+        # Agregar padding al content_frame
+        main_content = ttk.Frame(self.content_frame, padding=16)
+        main_content.pack(fill='both', expand=True)
 
         self.cap = None
         self.running = False
@@ -351,16 +433,16 @@ class CameraTab(ttk.Frame):
         self._refocus_just_completed = False
         self.refocus_status = tk.StringVar(value='')
 
-        ttk.Label(self, text='Deteccion de color en vivo', style='Title.TLabel').pack(anchor='w', pady=(0, 4))
+        ttk.Label(main_content, text='Deteccion de color en vivo', style='Title.TLabel').pack(anchor='w', pady=(0, 4))
         ttk.Label(
-            self,
+            main_content,
             text='Si hay fondo, mano u otros objetos en camara, activa "solo el centro" para leer\n'
                  'unicamente lo que este dentro del recuadro y evitar lecturas mezcladas. Coloca el\n'
                  'objeto llenando el recuadro y observa la barra de enfoque debajo del video.',
             style='Muted.TLabel', justify='left',
         ).pack(anchor='w', pady=(0, 12))
 
-        controls = ttk.Frame(self)
+        controls = ttk.Frame(main_content)
         controls.pack(fill='x', pady=(0, 10))
         self.start_btn = ttk.Button(controls, text='Iniciar camara', style='Accent.TButton', command=self.start_camera)
         self.start_btn.pack(side='left', padx=(0, 8))
@@ -373,7 +455,7 @@ class CameraTab(ttk.Frame):
             variable=self.use_center_only,
         ).pack(side='left', padx=(16, 0))
 
-        video_wrap = tk.Frame(self, bg='#000000')
+        video_wrap = tk.Frame(main_content, bg='#000000')
         video_wrap.pack()
         # Importante: si a un Label de Tkinter se le pone width/height en
         # numero (pensando en pixeles) ANTES de tener una imagen asignada,
@@ -387,7 +469,7 @@ class CameraTab(ttk.Frame):
         self.video_label = tk.Label(video_wrap, image=self.placeholder_img, bg=BG_VIDEO, bd=0)
         self.video_label.pack(padx=1, pady=1)
 
-        focus_row = ttk.Frame(self)
+        focus_row = ttk.Frame(main_content)
         focus_row.pack(fill='x', pady=(10, 0))
         ttk.Label(focus_row, text='Enfoque:', style='Muted.TLabel').pack(side='left', padx=(0, 8))
         self.focus_bar = ttk.Progressbar(focus_row, length=200, maximum=100, mode='determinate')
@@ -396,8 +478,20 @@ class CameraTab(ttk.Frame):
         self.focus_pct_label.pack(side='left', padx=(8, 0))
         ttk.Label(focus_row, textvariable=self.refocus_status, style='Muted.TLabel').pack(side='left', padx=(16, 0))
 
-        self.badge = PredictionBadge(self)
+        self.badge = PredictionBadge(main_content)
         self.badge.pack(fill='x', pady=(16, 0))
+
+    def _on_content_change(self, event):
+        """Actualizar la region scrolleable cuando el contenido cambia de tamaño"""
+        self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox('all'))
+        self.canvas_scroll.itemconfig(self.canvas_window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        """Manejar la rueda del mouse para desplazamiento"""
+        if event.num == 5 or event.delta < 0:
+            self.canvas_scroll.yview_scroll(3, 'units')
+        elif event.num == 4 or event.delta > 0:
+            self.canvas_scroll.yview_scroll(-3, 'units')
 
     def request_refocus_now(self):
         self.request_refocus.set()
